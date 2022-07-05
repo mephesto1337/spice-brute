@@ -141,7 +141,7 @@ int print_status_cb(gpointer user_data) {
 
     printf("Current password: '%s' (%lu/%lu %5.2f%%)\n", args->current_password,
            args->password_count, args->total_password_count, percent);
-    return EXIT_SUCCESS;
+    return TRUE;
 }
 
 void disconnected_cb(SpiceSession *_session, gpointer user_data) {
