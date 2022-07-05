@@ -1,0 +1,3 @@
+*.o
+*.tgz
+/spice-brute
