@@ -7,29 +7,35 @@
 #include <stdlib.h>
 #include <unistd.h>
 
-// #include "spice-utils.c"
 #include "check.h"
+#include "lock-file.h"
 #include "spice-channel-types.h"
 #include "utils.h"
 
+#define THREADS_COUNT 16
+
+GMainLoop *loop;
 typedef struct {
     const char *uri;
-    FILE *password_file;
-    GMainLoop *loop;
-    char *current_password;
-    size_t password_sz;
-    size_t password_count;
+    lock_file_t *password_file;
+    char *buffer;
+    size_t buflen;
+    size_t index;
+} thread_args_t;
+
+typedef struct {
+    lock_file_t *password_file;
     size_t total_password_count;
-} g_main_args_t;
+} print_status_args_t;
 
 void channel_new_cb(SpiceSession *session, SpiceChannel *channel, gpointer user_data);
 void channel_destroy_cb(SpiceSession *session, SpiceChannel *channel, gpointer user_data);
 void channel_event_cb(SpiceChannel *channel, SpiceChannelEvent event, gpointer user_data);
 void disconnected_cb(SpiceSession *session, gpointer user_data);
-void try_next_password(SpiceSession *session, g_main_args_t *args);
-size_t count_passwords_in_file(FILE *f);
+void try_next_password(SpiceSession *session, thread_args_t *args);
+size_t count_passwords_in_file(lock_file_t *f);
 int print_status_cb(gpointer user_data);
-int g_main(gpointer user_data);
+void g_thread_func(gpointer data, gpointer user_data);
 
 int main(int argc, char *const argv[]) {
     if (argc != 3) {
@@ -38,63 +44,61 @@ int main(int argc, char *const argv[]) {
         return EXIT_FAILURE;
     }
 
-    g_main_args_t args = {.uri = argv[1],
-                          .password_file = NULL,
-                          .loop = NULL,
-                          .current_password = NULL,
-                          .password_sz = 0,
-                          .password_count = 0,
-                          .total_password_count = 0};
+    GThreadPool *tp = NULL;
+    lock_file_t *password_file = NULL;
+    const char *uri = argv[1];
 
-    CHK_NULL(args.password_file = fopen(argv[2], "r"));
-    args.total_password_count = count_passwords_in_file(args.password_file);
-    printf("%lu passwords to try.", args.total_password_count);
+    CHK_NULL(password_file = lock_file_open(argv[2], "r"));
+    size_t total_password_count = count_passwords_in_file(password_file);
+    printf("%lu passwords to try.", total_password_count);
 
-    CHK_NULL(args.loop = g_main_loop_new(NULL, FALSE));
-    g_idle_add(g_main, (void *)&args);
-    g_timeout_add_seconds(5, print_status_cb, (void *)&args);
-    g_main_loop_run(args.loop);
-    g_main_loop_unref(args.loop);
-    if (args.password_file != NULL) {
-        fclose(args.password_file);
+    CHK_NULL(loop = g_main_loop_new(NULL, FALSE));
+    CHK_NULL(tp = g_thread_pool_new(g_thread_func, NULL, THREADS_COUNT, FALSE, NULL));
+
+    print_status_args_t ps_args = {.password_file = password_file,
+                                   .total_password_count = total_password_count};
+    g_timeout_add_seconds(5, print_status_cb, (void *)&ps_args);
+
+    thread_args_t *t_args = NULL;
+    CHK_NULL(t_args = calloc(THREADS_COUNT, sizeof(thread_args_t)));
+    for (size_t i = 0; i < THREADS_COUNT; i++) {
+        t_args[i].password_file = password_file;
+        t_args[i].uri = uri;
+        t_args[i].index = i;
+        g_thread_pool_push(tp, (void *)&t_args[i], NULL);
     }
+    g_main_loop_run(loop);
+    g_main_loop_unref(loop);
+
+    lock_file_close(password_file);
 
     return EXIT_SUCCESS;
 }
 
-int g_main(gpointer user_data) {
-    g_main_args_t *args = (g_main_args_t *)user_data;
+void g_thread_func(gpointer data, gpointer user_data) {
+    (void)user_data;
+    thread_args_t *args = (thread_args_t *)data;
     SpiceSession *session = NULL;
 
     CHK_NULL(session = spice_session_new());
-    g_signal_connect(G_OBJECT(session), "channel-new", G_CALLBACK(channel_new_cb), user_data);
-    g_signal_connect(G_OBJECT(session), "disconnected", G_CALLBACK(disconnected_cb), args->loop);
+    g_signal_connect(G_OBJECT(session), "channel-new", G_CALLBACK(channel_new_cb), data);
 
     g_object_set(session, "uri", args->uri, NULL);
     CHK_FALSE(spice_session_connect(session));
-
-    return EXIT_SUCCESS;
+    printf("Thread %lu launched\n", args->index);
 }
 
-void channel_destroy_cb(SpiceSession *_session, SpiceChannel *channel, gpointer user_data) {
+void channel_new_cb(SpiceSession *_session, SpiceChannel *channel, gpointer data) {
     (void)_session;
-    (void)user_data;
-
-    printf("Channel %s deleted.\n", channel_to_string(channel));
-}
-
-void channel_new_cb(SpiceSession *_session, SpiceChannel *channel, gpointer user_data) {
-    (void)_session;
-    (void)user_data;
     gint channel_type = -1;
 
-    printf("New channel created: %s\n", channel_to_string(channel));
+    // printf("New channel created: %s\n", channel_to_string(channel));
 
     g_object_get(channel, "channel-type", &channel_type, NULL);
 
     switch (channel_type) {
     case SPICE_CHANNEL_MAIN:
-        g_signal_connect(channel, "channel-event", G_CALLBACK(channel_event_cb), user_data);
+        g_signal_connect(channel, "channel-event", G_CALLBACK(channel_event_cb), data);
         break;
     case SPICE_CHANNEL_INPUTS:
     case SPICE_CHANNEL_PLAYBACK:
@@ -104,13 +108,12 @@ void channel_new_cb(SpiceSession *_session, SpiceChannel *channel, gpointer user
     case SPICE_CHANNEL_RECORD:
         break;
     default:
-        g_signal_connect(channel, "channel-destroy", G_CALLBACK(channel_destroy_cb), NULL);
         break;
     }
 }
 
-void channel_event_cb(SpiceChannel *channel, SpiceChannelEvent event, gpointer user_data) {
-    g_main_args_t *args = (g_main_args_t *)user_data;
+void channel_event_cb(SpiceChannel *channel, SpiceChannelEvent event, gpointer data) {
+    thread_args_t *args = (thread_args_t *)data;
     SpiceSession *session = NULL;
 
     g_object_get(channel, "spice-session", &session, NULL);
@@ -124,55 +127,46 @@ void channel_event_cb(SpiceChannel *channel, SpiceChannelEvent event, gpointer u
         g_object_get(session, "password", &password, NULL);
         printf("Password: %s\n", password);
         spice_session_disconnect(session);
-        g_main_loop_quit(args->loop);
+        g_main_loop_quit(loop);
         break;
     }
     default:
         printf("%s: event %s\n", channel_to_string(channel), channel_event_to_string(event));
         spice_session_disconnect(session);
-        g_main_loop_quit(args->loop);
+        g_main_loop_quit(loop);
         break;
     }
 }
 
 int print_status_cb(gpointer user_data) {
-    g_main_args_t *args = (g_main_args_t *)user_data;
-    double percent = 100.0 * (double)args->password_count / (double)args->total_password_count;
+    print_status_args_t *args = (print_status_args_t *)user_data;
+    size_t passwords_checked_count = lock_file_get_count(args->password_file);
+    double percent = 100.0 * (double)passwords_checked_count / (double)args->total_password_count;
 
-    printf("Current password: '%s' (%lu/%lu %5.2f%%)\n", args->current_password,
-           args->password_count, args->total_password_count, percent);
+    printf("Status: %lu/%lu %5.2f%%\n", passwords_checked_count, args->total_password_count,
+           percent);
     return TRUE;
 }
 
-void disconnected_cb(SpiceSession *_session, gpointer user_data) {
-    (void)_session;
-    GMainLoop *loop = (GMainLoop *)user_data;
-    g_main_loop_quit(loop);
-}
-
-void try_next_password(SpiceSession *session, g_main_args_t *args) {
-    ssize_t n;
-    do {
-        if ((n = getline(&args->current_password, &args->password_sz, args->password_file)) < 0) {
-            g_main_loop_quit(args->loop);
-            return;
-        }
-    } while (n <= 1);
-    args->current_password[n - 1] = 0;
-    args->password_count++;
-
-#if 0
-    {
-        char *p = NULL;
-        g_object_get(session, "password", &p, NULL);
-        printf("Bad password: '%s'\n", p);
+void try_next_password(SpiceSession *session, thread_args_t *args) {
+    ssize_t n = lock_file_readline(args->password_file, &args->buffer, &args->buflen);
+    if (n < 0) {
+        printf("Reached EOF\n");
+        g_main_loop_quit(loop);
+        return;
     }
-#endif
-    g_object_set(session, "password", args->current_password, NULL);
+    assert(n > 0 && "Buffer should not be empty");
+    // Remove trailing '\n'
+    args->buffer[n - 1] = 0;
+
+    g_object_set(session, "password", args->buffer, NULL);
     spice_session_connect(session);
 }
 
-size_t count_passwords_in_file(FILE *f) {
+size_t count_passwords_in_file(lock_file_t *lf) {
+    // LOL: ugly
+    FILE *f = ((FILE **)lf)[0];
+
     CHK_NEG(fseek(f, 0, SEEK_SET));
     size_t password_count = 0;
     char c;
