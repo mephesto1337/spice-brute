@@ -38,9 +38,8 @@ size_t lock_file_get_count(const lock_file_t *lf) {
 static ssize_t _lock_file_readline(lock_file_t *lf, char **buffer, size_t *buflen) {
     g_mutex_lock(&lf->lock);
     ssize_t n = getline(buffer, buflen, lf->file);
-    __c11_atomic_fetch_add(&lf->line_count, 1, memory_order_relaxed);
-    lf->line_count++;
     g_mutex_unlock(&lf->lock);
+    __c11_atomic_fetch_add(&lf->line_count, 1, memory_order_relaxed);
     return n;
 }
 
