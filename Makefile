@@ -16,11 +16,11 @@ LIBS += \
    $(shell pkg-config --libs spice-client-glib-2.0) \
    $(shell pkg-config --libs spice-protocol)
 
-HDR = $(wildcard *.h)
-SRC = $(wildcard *.c)
-OBJ = $(SRC:%.c=%.o)
+HDR = $(wildcard src/*.h)
+SRC = $(wildcard src/*.c)
+OBJ = $(SRC:src/%.c=obj/%.o)
 MAIN_SRC = $(shell grep -Pl '^int\s+main\s*\x28int\b' $(SRC))
-BIN = $(MAIN_SRC:%.c=%)
+BIN = $(MAIN_SRC:src/%.c=%)
 
 .PHONY: all clean
 
@@ -36,9 +36,10 @@ else
 	$(LD) $(LDFLAGS) -o $@ $^ $(LIBS)
 endif
 
-%.o: %.c $(HDR)
+obj/%.o: src/%.c $(HDR)
+	@mkdir -p obj/
 ifeq ($V, 0)
-	@echo "CC $@"
+	@echo "CC $<"
 	@$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ -c $<
 else
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ -c $<
