@@ -19,7 +19,8 @@ LIBS += \
 HDR = $(wildcard *.h)
 SRC = $(wildcard *.c)
 OBJ = $(SRC:%.c=%.o)
-BIN = spice-brute
+MAIN_SRC = $(shell grep -Pl '^int\s+main\s*\x28int\b' $(SRC))
+BIN = $(MAIN_SRC:%.c=%)
 
 .PHONY: all clean
 
