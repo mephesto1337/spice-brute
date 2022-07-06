@@ -22,5 +22,6 @@ dnf install clang make glib2-devel spice-glib-devel
 
 #### Archlinux
 ```bash
-pacman -S clang make glib2 spice-gtk gobject-introspection pkg-config
+pacman -S clang make glib2 spice-gtk gobject-introspection pkg-config \
+  spice-protocol
 ```
