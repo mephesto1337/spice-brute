@@ -10,7 +10,7 @@ CFLAGS += -std=c99 -Wall -Wextra -Wshadow -Wpedantic -O3 -Wno-zero-length-array
 V ?= 0
 
 LD = clang
-LDFLAGS += -fuse-ld=/usr/bin/mold
+LDFLAGS +=
 LIBS += \
    $(shell pkg-config --libs glib-2.0) \
    $(shell pkg-config --libs spice-client-glib-2.0) \
